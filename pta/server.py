@@ -67,28 +67,146 @@ class PTAServer:
 
         return self.term_ok_response.format(seq_num)
 
-    # TODO implementar transferência de arquivos
-    def handle_pega_request(self, request_obj):
-        return None
+    def get_pega_response_from(self, request_object):
+        """Retorna uma resposta à requisição 'PEGA' como string literal.
+
+        Possíveis retornos:
+
+        <seq_num> NOK
+
+        caso o arquivo pedido na requisição não exista ou
+
+        <seq_num> ARQS <byte_array> :END:
+
+        caso o arquivo exista, onde '<byte_array>' são os bytes do arquivo
+        requisitado.
+        """
+        seq_num = request_object.seq_num
+        filename = request_object.args
+
+        self.logger.debug("----ARQUIVO SOLICITADO: %s",
+                          filename)
+
+        file_list = os.listdir(self.file_dir)
+
+        if filename not in file_list:
+            self.logger.debug(
+                "----ARQUIVO NÃO ENCONTRADO: %s",
+                filename)
+
+            response = self.get_nok_response(seq_num)
+        else:
+            self.logger.debug(
+                "----ARQUIVO ENCONTRADO: %s",
+                filename)
+
+            file_content = self.get_data_stream_from(
+                filename)
+
+            response = self.get_pega_ok_response(
+                seq_num, file_content)
+
+        return response
 
     def is_valid_user(self, username):
+        """Verifica se o nome fornecido se encontra na lista de usuários."""
         return username in self.user_list
 
     def get_ok_response(self, seq_num):
+        """Retorna uma resposta OK genérica no formato
+
+        <seq_num> OK
+
+        como string literal.
+        """
         return self.cump_ok_response.format(seq_num)
 
     def get_nok_response(self, seq_num):
+        """Retorna uma resposta 'NOK' genérica no formato
+
+        <seq_num> NOK
+
+        como um string literal.
+        """
         return self.nok_response.format(seq_num)
 
-    def get_file_ok_response(self, seq_num, file_stream):
+    def get_pega_ok_response(self, seq_num, file_stream):
+        """Retorna uma resposta 'OK' para a requisição PEGA no formato
+
+        <seq_num> ARQ <file_stream> :END:
+
+        como um string literal.
+        """
         return self.pega_ok_response.format(seq_num, file_stream)
 
     def get_data_stream_from(self, filename):
+        """Retorna o arquivo de nome 'filename' como um array de bytes."""
         file_path = "{0}/{1}".format(self.file_dir, filename)
         file = open(file_path, 'r')
         stream = file.read()
         file.close()
         return stream
+
+    def handle_user_session(self, connection_socket):
+        """Lida com as requisições durante a sessão do usuário.
+
+        Requisições:
+        CUMP - retorna <seq_num> NOK
+
+        LIST - retorna <seq_num> ARQS <files,separated,by,comma> :END:
+                        ou <seq_num> OK/NOK
+
+        PEGA - retorna <seq_num> ARQ <byte_stream> :END:
+                        ou <seq_num> NOK
+
+        TERM - retorna <seq_num> OK e fecha a conexão atual do socket.
+        """
+        session_is_open = True
+        while session_is_open:
+            session_message = connection_socket.recv(2048)
+
+            if not session_message:
+                self.logger.debug(
+                    "----SOCKET CLIENTE FECHADO--")
+                break
+
+            session_request = Request(session_message)
+            if session_request.is_list_type():
+                self.logger.debug(
+                    "----LIST RECEBIDO: %s",
+                    session_message.decode("utf-8"))
+
+                response = self.handle_list_request(
+                    session_request)
+
+            elif session_request.is_term_type():
+                self.logger.debug(
+                    "----TERM RECEBIDO: %s",
+                    session_message.decode("utf-8"))
+
+                response = self.get_ok_response(
+                    session_request.seq_num)
+
+                session_is_open = False
+
+            elif session_request.is_cump_type():
+                self.logger.debug(
+                    "----CUMP RECEBIDO DENTRO DE SESSÃO: %s",
+                    session_message.decode("utf-8"))
+
+                response = self.get_nok_response(
+                    session_request.seq_num)
+
+            elif session_request.is_pega_type():
+                self.logger.debug(
+                    "----PEGA RECEBIDO: %s",
+                    session_message.decode("utf-8"))
+
+                response = self.get_pega_response_from(session_request)
+
+            self.logger.debug(
+                "----->RESPOSTA DA REQUISIÇÃO: %s", response)
+            connection_socket.sendall(str.encode(response))
 
     def start_listening(self):
         """Escuta indefinidamente por requisições, a sua execução é blocante.
@@ -105,6 +223,8 @@ class PTAServer:
         self.logger.debug("ARQUIVOS:\n%s\n", os.listdir(path=self.file_dir))
         self.logger.warn("--Servidor escutando requisições--\n")
 
+        # Lida com as requisições inicias durante o período de apresentação
+        # antes de abrir uma sessão.
         listening_tcp_requests = True
         while listening_tcp_requests:
             try:
@@ -117,91 +237,20 @@ class PTAServer:
                 self.logger.debug("--Requisição PTA recebida: %s",
                                  message.decode('utf-8'))
 
-                response = 'REQUEST NOT IN PTA FORMAT'
-
                 if request_obj.is_cump_type():
                     self.logger.debug("--CUMP RECEBIDO--")
 
                     client_username = request_obj.args
                     if self.is_valid_user(client_username):
                         self.logger.debug("--USUÁRIO VÁLIDO--")
-                        self.logger.debug("##INICIANDO SESSÃO##")
 
-                        cump_ok = self.get_ok_response(
-                            request_obj.seq_num)
-
+                        cump_ok = self.get_ok_response(request_obj.seq_num)
                         connection_socket.sendall(str.encode(cump_ok))
 
-                        session_is_open = True
-                        while session_is_open:
-                            session_message = connection_socket.recv(2048)
-
-                            if not session_message:
-                                self.logger.debug(
-                                    "----SOCKET CLIENTE FECHADO--")
-                                break
-
-                            session_request = Request(session_message)
-                            if session_request.is_list_type():
-                                self.logger.debug(
-                                    "----LIST RECEBIDO: %s",
-                                    session_message.decode("utf-8"))
-
-                                response = self.handle_list_request(
-                                    session_request)
-
-                            elif session_request.is_term_type():
-                                self.logger.debug(
-                                    "----TERM RECEBIDO: %s",
-                                    session_message.decode("utf-8"))
-
-                                response = self.get_ok_response(
-                                    session_request.seq_num)
-
-                                session_is_open = False
-
-                            elif session_request.is_cump_type():
-                                self.logger.debug(
-                                    "----CUMP RECEBIDO DENTRO DE SESSÃO: %s",
-                                    session_message.decode("utf-8"))
-
-                                response = self.get_nok_response(
-                                    session_request.seq_num)
-
-                            elif session_request.is_pega_type():
-                                self.logger.debug(
-                                    "----PEGA RECEBIDO: %s",
-                                    session_message.decode("utf-8"))
-
-                                seq_num = session_request.seq_num
-                                filename = session_request.args
-
-                                self.logger.debug("----ARQUIVO SOLICITADO: %s",
-                                                  filename)
-
-                                file_list = os.listdir(self.file_dir)
-
-                                if filename not in file_list:
-                                    self.logger.debug(
-                                        "----ARQUIVO NÃO ENCONTRADO: %s",
-                                        filename)
-
-                                    response = self.get_nok_response(seq_num)
-                                else:
-                                    self.logger.debug(
-                                        "----ARQUIVO ENCONTRADO: %s",
-                                        filename)
-
-                                    file_content = self.get_data_stream_from(
-                                        filename)
-
-                                    response = self.get_file_ok_response(
-                                        seq_num, file_content)
-
-                            self.logger.debug(
-                                "----->RESPOSTA DA REQUISIÇÃO: %s", response)
-                            connection_socket.sendall(str.encode(response))
-
+                        # Inicia uma sessão com o usuário após o recebimento de
+                        # um CUMP contendo um nome de usuário válido.
+                        self.logger.debug("##INICIANDO SESSÃO##")
+                        self.handle_user_session(connection_socket)
                         self.logger.debug("##FINALIZANDO SESSÃO##")
                     else:
                         self.logger.debug("--USUÁRIO INVÁLIDO NO CUMP--")
